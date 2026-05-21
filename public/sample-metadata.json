@@ -1,0 +1,36 @@
+{
+  "name": "Cyber Titan Prime",
+  "description": "The elite vanguard cybernetic construct engineered to defend sovereign cryptographic blocks on the Polygon Amoy test network.",
+  "image": "ipfs://QmXoypizjW3WknFixtdKLwznw71tbF1T2wD5vQP3G8v2Yg",
+  "external_url": "https://cyberspace.network/nft/1",
+  "attributes": [
+    {
+      "trait_type": "Background",
+      "value": "Neon Matrix"
+    },
+    {
+      "trait_type": "Armor Class",
+      "value": "Quantum Chrono"
+    },
+    {
+      "trait_type": "Energy Core",
+      "value": "Singularity Reactor"
+    },
+    {
+      "display_type": "boost_percentage",
+      "trait_type": "Core Performance",
+      "value": 98
+    },
+    {
+      "display_type": "number",
+      "trait_type": "Generation Year",
+      "value": 2026
+    }
+  ],
+  "properties": {
+    "category": "Art",
+    "rarity_score": 92.4,
+    "creator": "0x7a89C05Ed64849646b402857a82bE0C2Ff14a065",
+    "royalty_bps": 500
+  }
+}
