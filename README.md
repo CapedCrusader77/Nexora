@@ -86,3 +86,4 @@ npx hardhat run scripts/deploy.js --network amoy
 
 ## 📜 License
 Distributed under the MIT License. See `LICENSE` for more information.
+"# Nexora" 
