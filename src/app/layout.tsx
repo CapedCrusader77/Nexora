@@ -6,6 +6,9 @@ import { WalletSimulator } from '../components/WalletSimulator';
 import { Footer } from '../components/Footer';
 import '../index.css';
 
+// Only show wallet simulator in development mode
+const isDevelopment = process.env.NODE_ENV === 'development';
+
 export const metadata: Metadata = {
   title: 'NEXORA | NFT Marketplace — EtherAuthority Internship Project',
   description: 'A production-grade Web3 NFT Marketplace & Auction House built on Polygon Amoy Testnet. Developed under the EtherAuthority Training Program featuring real blockchain transactions, ERC-721 minting, and ERC-2981 royalty compliance.',
@@ -29,7 +32,9 @@ export default function RootLayout({
           <div className="relative z-10 flex flex-col min-h-screen">
             {/* Top Navbar */}
             <NEXORANavbar />
-            <WalletSimulator />
+            
+            {/* Wallet Simulator - Development Only */}
+            {isDevelopment && <WalletSimulator />}
 
             {/* Main Page Layout */}
             <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 pt-24 sm:pt-28 pb-16">

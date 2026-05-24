@@ -6,9 +6,12 @@ import { usePathname } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { 
   Wallet, Menu, X, Search, Sparkles, ChevronDown, LogOut, 
-  Copy, Check, Zap, Terminal
+  Copy, Check, Zap, Terminal, Settings
 } from 'lucide-react';
 import { useWeb3 } from '../context/Web3Context';
+
+// Show dev simulator only in development
+const isDevelopment = process.env.NODE_ENV === 'development';
 
 export const NEXORANavbar: React.FC = () => {
   const pathname = usePathname();
@@ -119,18 +122,21 @@ export const NEXORANavbar: React.FC = () => {
               <Sparkles className="w-4 h-4" /> Create
             </Link>
 
-            {/* Dev Simulator Trigger */}
-            <button
-              onClick={() => setSimulatorOpen(!isSimulatorOpen)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold transition ${
-                isSimulatorOpen 
-                  ? 'bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 font-bold' 
-                  : 'bg-white/[0.02] border border-white/5 hover:border-white/15 text-white/70 hover:text-white hover:bg-white/[0.05]'
-              }`}
-            >
-              <Terminal className="w-4 h-4" />
-              <span className="hidden sm:inline">Dev Simulator</span>
-            </button>
+            {/* Dev Simulator Trigger - Development Only */}
+            {isDevelopment && (
+              <button
+                onClick={() => setSimulatorOpen(!isSimulatorOpen)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold transition ${
+                  isSimulatorOpen 
+                    ? 'bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 font-bold' 
+                    : 'bg-white/[0.02] border border-white/5 hover:border-white/15 text-white/70 hover:text-white hover:bg-white/[0.05]'
+                }`}
+                title="Development Tools - Hidden in Production"
+              >
+                <Terminal className="w-4 h-4" />
+                <span className="hidden sm:inline">Dev Tools</span>
+              </button>
+            )}
 
             {walletType === 'simulated' ? (
               <div className="flex items-center gap-2">
