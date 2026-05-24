@@ -22,25 +22,17 @@ export function useContractData(walletAddress: string | null) {
 
   /**
    * Fetch all listed items from marketplace contract
-   * Reads: MARKETPLACE_ABI functions like getMarketItems()
+   * Reads: MARKETPLACE_ABI functions like fetchMarketItems()
    */
   const fetchMarketplaceItems = useCallback(async () => {
     if (!publicClient) return;
     try {
-      // This assumes marketplace has a getMarketItems() or similar function
-      // If not, we'll need to read ListingCreated events
+      // Call fetchMarketItems from marketplace contract
       const result = await publicClient.readContract({
         address: MARKETPLACE_ADDRESS,
         abi: MARKETPLACE_ABI,
-        functionName: 'getMarketItems',
-      }).catch(() => {
-        // Fallback: read events if function doesn't exist
-        return publicClient.getLogs({
-          address: MARKETPLACE_ADDRESS,
-          event: 'NFTListed',
-          fromBlock: 'earliest',
-        });
-      });
+        functionName: 'fetchMarketItems',
+      } as const);
 
       // Transform contract data to NFT format
       if (Array.isArray(result)) {
@@ -76,51 +68,51 @@ export function useContractData(walletAddress: string | null) {
 
   /**
    * Fetch all active auctions from auction contract
+   * NOTE: AUCTION_ABI does NOT have getActiveAuctions() function
+   * So we read AuctionCreated events instead
    */
   const fetchAuctions = useCallback(async () => {
     if (!publicClient) return;
     try {
-      const result = await publicClient.readContract({
+      // Read AuctionCreated events directly (getActiveAuctions doesn't exist in ABI)
+      const auctionEvents = await publicClient.getContractEvents({
         address: AUCTION_ADDRESS,
         abi: AUCTION_ABI,
-        functionName: 'getActiveAuctions',
-      }).catch(() => {
-        // Fallback: read AuctionCreated events
-        return publicClient.getLogs({
-          address: AUCTION_ADDRESS,
-          event: 'AuctionCreated',
-          fromBlock: 'earliest',
-        });
-      });
+        eventName: 'AuctionCreated',
+        fromBlock: 'earliest',
+      } as const);
 
-      if (Array.isArray(result)) {
-        const auctionList = result.map((auction: any) => ({
-          tokenId: Number(auction.tokenId),
-          name: `Auction #${auction.tokenId}`,
-          description: 'Active auction',
-          image: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=400',
-          category: 'Digital Art',
-          creator: auction.seller,
-          owner: auction.seller,
-          price: 0,
-          royaltyFee: 5,
-          royaltyReceiver: auction.seller,
-          isListed: false,
-          isAuction: true,
-          minBid: Number(auction.minBid) / 1e18,
-          highestBid: Number(auction.highestBid) / 1e18,
-          highestBidder: auction.highestBidder || null,
-          auctionEndTime: Number(auction.endTime) * 1000,
-          auctionEnded: false,
-          bids: [],
-          rarity: {
-            score: Math.random() * 100,
-            level: 'Epic' as const,
-            traits: [],
-          },
-          createdAt: Date.now(),
-          views: Math.floor(Math.random() * 500),
-        }));
+      if (Array.isArray(auctionEvents) && auctionEvents.length > 0) {
+        const auctionList = auctionEvents.map((event: any) => {
+          const args = event.args || {};
+          return {
+            tokenId: Number(args.tokenId || 0),
+            name: `Auction #${args.tokenId || 0}`,
+            description: 'Active auction',
+            image: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=400',
+            category: 'Digital Art',
+            creator: args.seller || '',
+            owner: args.seller || '',
+            price: 0,
+            royaltyFee: 5,
+            royaltyReceiver: args.seller || '',
+            isListed: false,
+            isAuction: true,
+            minBid: Number(args.minBid || 0) / 1e18,
+            highestBid: 0,
+            highestBidder: null,
+            auctionEndTime: Number(args.endTime || 0) * 1000,
+            auctionEnded: false,
+            bids: [],
+            rarity: {
+              score: Math.random() * 100,
+              level: 'Epic' as const,
+              traits: [],
+            },
+            createdAt: Date.now(),
+            views: Math.floor(Math.random() * 500),
+          };
+        });
         setAuctions(auctionList);
       }
     } catch (err) {
@@ -144,22 +136,23 @@ export function useContractData(walletAddress: string | null) {
         abi: NFT_ABI,
         functionName: 'balanceOf',
         args: [walletAddress as `0x${string}`],
-      });
+      } as const);
 
       if (Number(balance) > 0) {
-        // Fetch user's token IDs (requires implementation or events)
-        const transferLogs = await publicClient.getLogs({
+        // Fetch user's token IDs using Transfer events
+        const transferLogs = await publicClient.getContractEvents({
           address: NFT_ADDRESS,
-          event: 'Transfer',
+          abi: NFT_ABI,
+          eventName: 'Transfer',
           fromBlock: 'earliest',
           args: {
             to: walletAddress as `0x${string}`,
           },
-        });
+        } as const);
 
-        const userTokens = transferLogs.map((log: any) => ({
-          tokenId: Number(log.args.tokenId),
-          name: `Your NFT #${log.args.tokenId}`,
+        const userTokens = (transferLogs as any[]).map((log: any) => ({
+          tokenId: Number(log.args?.tokenId || 0),
+          name: `Your NFT #${log.args?.tokenId || 0}`,
           description: 'Your owned NFT',
           image: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=400',
           category: 'Digital Art',
