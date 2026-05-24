@@ -4,6 +4,19 @@ export const NFT_ADDRESS = (process.env.NEXT_PUBLIC_NFT_ADDRESS || "0x5FbDB23156
 export const MARKETPLACE_ADDRESS = (process.env.NEXT_PUBLIC_MARKETPLACE_ADDRESS || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512") as `0x${string}`;
 export const AUCTION_ADDRESS = (process.env.NEXT_PUBLIC_AUCTION_ADDRESS || "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0") as `0x${string}`;
 
+export const CHAIN_ID = 80002;
+export const EXPLORER_BASE_URL = "https://amoy.polygonscan.com";
+
+/** Build a Polygonscan/Etherscan URL for a transaction hash */
+export function getExplorerTxUrl(hash: string): string {
+  return `${EXPLORER_BASE_URL}/tx/${hash}`;
+}
+
+/** Build a Polygonscan/Etherscan URL for a contract or wallet address */
+export function getExplorerAddressUrl(address: string): string {
+  return `${EXPLORER_BASE_URL}/address/${address}`;
+}
+
 export const NFT_ABI = [
   {
     "inputs": [

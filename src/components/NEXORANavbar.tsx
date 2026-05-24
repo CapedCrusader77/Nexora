@@ -68,6 +68,10 @@ export const NEXORANavbar: React.FC = () => {
                 </div>
               </div>
               <span className="font-display font-bold text-xl tracking-tight">NEXORA</span>
+              <span className="hidden xl:inline-flex items-center gap-1 ml-2 px-2 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/20 text-[9px] text-blue-400 font-semibold uppercase tracking-wider">
+                <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                EtherAuthority
+              </span>
             </Link>
 
             {/* Desktop Nav */}

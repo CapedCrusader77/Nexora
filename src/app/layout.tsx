@@ -3,11 +3,14 @@ import type { Metadata } from 'next';
 import { Web3Provider } from '../context/Web3Provider';
 import { NEXORANavbar } from '../components/NEXORANavbar';
 import { WalletSimulator } from '../components/WalletSimulator';
+import { Footer } from '../components/Footer';
 import '../index.css';
 
 export const metadata: Metadata = {
-  title: 'NEXORA | Premium Cyberpunk Web3 NFT Marketplace',
-  description: 'Discover, collect, and bid on elite digital collectibles inside a gas-optimized, decentralized futuristic cyberpunk marketplace.',
+  title: 'NEXORA | NFT Marketplace — EtherAuthority Internship Project',
+  description: 'A production-grade Web3 NFT Marketplace & Auction House built on Polygon Amoy Testnet. Developed under the EtherAuthority Training Program featuring real blockchain transactions, ERC-721 minting, and ERC-2981 royalty compliance.',
+  keywords: ['NFT', 'Marketplace', 'Polygon', 'Ethereum', 'Web3', 'EtherAuthority', 'DApp', 'Blockchain'],
+  authors: [{ name: 'EtherAuthority Intern' }],
 };
 
 export default function RootLayout({
@@ -32,6 +35,9 @@ export default function RootLayout({
             <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 pt-24 sm:pt-28 pb-16">
               {children}
             </main>
+
+            {/* Footer with EtherAuthority Branding */}
+            <Footer />
           </div>
         </Web3Provider>
       </body>

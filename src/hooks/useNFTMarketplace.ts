@@ -1,14 +1,14 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { 
-  useAccount, useWriteContract, useWaitForTransactionReceipt, 
-  useReadContract, usePublicClient 
+import {
+  useAccount, useWriteContract, usePublicClient
 } from 'wagmi';
-import { parseEther, formatEther } from 'viem';
-import { 
+import { parseEther, decodeEventLog } from 'viem';
+import {
   NFT_ADDRESS, MARKETPLACE_ADDRESS, AUCTION_ADDRESS,
-  NFT_ABI, MARKETPLACE_ABI, AUCTION_ABI 
+  NFT_ABI, MARKETPLACE_ABI, AUCTION_ABI,
+  getExplorerTxUrl
 } from '../utils/constants';
 import { PinataService } from '../services/pinata';
 
@@ -59,6 +59,7 @@ export interface TransactionRecord {
   to: string;
   timestamp: number;
   status: 'Pending' | 'Success' | 'Failed';
+  explorerUrl?: string;
 }
 
 export interface AppNotification {
@@ -157,6 +158,45 @@ const INITIAL_MOCK_NFTS: NFT[] = [
   }
 ];
 
+/**
+ * Maps common Solidity revert errors to human-readable messages.
+ */
+function parseContractError(err: any): string {
+  const msg = err?.message || err?.shortMessage || String(err);
+  if (msg.includes('User rejected') || msg.includes('user rejected')) return 'Transaction rejected by user';
+  if (msg.includes('PriceMustBeGreaterThanZero')) return 'Price must be greater than zero';
+  if (msg.includes('NotNFTOwner')) return 'You are not the owner of this NFT';
+  if (msg.includes('MarketplaceNotApproved')) return 'Marketplace not approved — please approve the contract first';
+  if (msg.includes('ListingNotActive')) return 'This listing is no longer active';
+  if (msg.includes('InsufficientPayment')) return 'Insufficient payment amount sent';
+  if (msg.includes('AuctionNotActive')) return 'This auction is not active';
+  if (msg.includes('AuctionHasEnded')) return 'This auction has already ended';
+  if (msg.includes('AuctionNotEnded')) return 'Auction has not ended yet';
+  if (msg.includes('BidTooLow')) return 'Bid amount is too low — must be at least 5% higher';
+  if (msg.includes('URIEmpty')) return 'Token URI cannot be empty';
+  if (msg.includes('RoyaltyFeeTooHigh')) return 'Royalty fee cannot exceed 20%';
+  if (msg.includes('insufficient funds')) return 'Insufficient funds in wallet';
+  if (msg.includes('CannotCancelWithBids')) return 'Cannot cancel auction with active bids';
+  if (msg.includes('ContractPaused')) return 'Marketplace is currently paused';
+  return msg.length > 120 ? msg.substring(0, 120) + '...' : msg;
+}
+
+function generateRarity(): NFTRarity {
+  const rarityScore = parseFloat((40 + Math.random() * 58).toFixed(1));
+  let rarityLevel: 'Common' | 'Rare' | 'Epic' | 'Legendary' = 'Common';
+  if (rarityScore > 90) rarityLevel = 'Legendary';
+  else if (rarityScore > 75) rarityLevel = 'Epic';
+  else if (rarityScore > 55) rarityLevel = 'Rare';
+  return {
+    score: rarityScore,
+    level: rarityLevel,
+    traits: [
+      { trait_type: "Background", value: "Synthwave Glow", rarityScore: 50 },
+      { trait_type: "Algorithm", value: "Generative Flash", rarityScore: 80 }
+    ]
+  };
+}
+
 export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress?: string | null) {
   const { address: realAddress, isConnected: realConnected } = useAccount();
 
@@ -212,12 +252,13 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
     });
   }, []);
 
-  const addTxRecord = useCallback((record: Omit<TransactionRecord, 'hash' | 'timestamp'>, overrideHash?: string) => {
+  const addTxRecord = useCallback((record: Omit<TransactionRecord, 'hash' | 'timestamp' | 'explorerUrl'>, overrideHash?: string) => {
     const hash = overrideHash || ('0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
     const newTx: TransactionRecord = {
       ...record,
       hash,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      explorerUrl: overrideHash ? getExplorerTxUrl(overrideHash) : undefined,
     };
     setTransactions(prev => {
       const updated = [newTx, ...prev];
@@ -227,27 +268,51 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
     return hash;
   }, []);
 
-  // Mint NFT
+  /**
+   * Parse the token ID from the NFTMinted event log in a transaction receipt.
+   */
+  function parseTokenIdFromReceipt(receipt: any): number | null {
+    if (!receipt?.logs) return null;
+    for (const log of receipt.logs) {
+      try {
+        const decoded = decodeEventLog({
+          abi: NFT_ABI,
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === 'NFTMinted') {
+          return Number((decoded.args as any).tokenId);
+        }
+        if (decoded.eventName === 'Transfer') {
+          return Number((decoded.args as any).tokenId);
+        }
+      } catch {
+        // Not our event, skip
+      }
+    }
+    return null;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  MINT NFT
+  // ══════════════════════════════════════════════════════════════════
   const mintNFT = async (metadata: {
     name: string;
     description: string;
     image: string;
     category: string;
-    royaltyFee: number; // e.g. 5
+    royaltyFee: number;
     royaltyReceiver: string;
     isAuction: boolean;
     priceOrBid: number;
-    duration?: number; // hours
+    duration?: number;
   }): Promise<{ success: boolean; tokenId?: number }> => {
     const royaltyReceiver = metadata.royaltyReceiver || safeAddress;
 
+    // ── Sandbox Mode ────────────────────────────────────────────────
     if (isPureSimulated) {
       const fallbackTokenId = nfts.length + 1;
-      const rarityScore = parseFloat((40 + Math.random() * 58).toFixed(1));
-      let rarityLevel: 'Common' | 'Rare' | 'Epic' | 'Legendary' = 'Common';
-      if (rarityScore > 90) rarityLevel = 'Legendary';
-      else if (rarityScore > 75) rarityLevel = 'Epic';
-      else if (rarityScore > 55) rarityLevel = 'Rare';
+      const rarity = generateRarity();
 
       const newNFT: NFT = {
         tokenId: fallbackTokenId,
@@ -268,14 +333,7 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
         auctionEndTime: metadata.isAuction ? Date.now() + (metadata.duration || 24) * 60 * 60 * 1000 : undefined,
         auctionEnded: metadata.isAuction ? false : undefined,
         bids: [],
-        rarity: {
-          score: rarityScore,
-          level: rarityLevel,
-          traits: [
-            { trait_type: "Background", value: "Local Simulator Grid", rarityScore: 40 },
-            { trait_type: "Algorithm", value: "Generative Fallback", rarityScore: 60 }
-          ]
-        },
+        rarity,
         createdAt: Date.now(),
         views: 1
       };
@@ -286,35 +344,26 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
         return updated;
       });
 
-      addTxRecord({
-        type: 'Mint',
-        tokenId: fallbackTokenId,
-        tokenName: metadata.name,
-        amount: 0,
-        from: '0x0000...0000',
-        to: safeAddress,
-        status: 'Success'
-      });
-
+      addTxRecord({ type: 'Mint', tokenId: fallbackTokenId, tokenName: metadata.name, amount: 0, from: '0x0000...0000', to: safeAddress, status: 'Success' });
       addNotification("NFT Minted (Sandbox)", `Simulated mint of CyberNFT #${fallbackTokenId} finished successfully.`, "success");
       return { success: true, tokenId: fallbackTokenId };
     }
 
-    addNotification("Initiating Mint", "Uploading metadata and pinning to IPFS...", "info");
+    // ── Real Blockchain Mint ────────────────────────────────────────
+    addNotification("Initiating Mint", "Uploading metadata to IPFS...", "info");
 
     const ipfsResult = await PinataService.pinJSONToIPFS(metadata, metadata.name);
     if (!ipfsResult.success || !ipfsResult.ipfsHash) {
-      addNotification("Upload Failed", "IPFS gateway uploading failed", "error");
+      addNotification("Upload Failed", "IPFS pinning failed. Check Pinata configuration.", "error");
       return { success: false };
     }
 
     const tokenURI = `ipfs://${ipfsResult.ipfsHash}`;
-    const royaltyBps = Math.round(metadata.royaltyFee * 100); // 5% = 500 bps
+    const royaltyBps = Math.round(metadata.royaltyFee * 100);
 
-    // Attempt Blockchain Mint
     try {
-      addNotification("Confirming Mint Transaction", "Please approve the transaction in your wallet", "info");
-      
+      addNotification("Confirm in Wallet", "Please approve the mint transaction in MetaMask", "info");
+
       const txHash = await writeContractAsync({
         address: NFT_ADDRESS,
         abi: NFT_ABI,
@@ -322,33 +371,20 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
         args: [tokenURI, royaltyReceiver as `0x${string}`, BigInt(royaltyBps)],
       });
 
-      addNotification("Transaction Submitted", "Waiting for block confirmation...", "info");
-      
-      // Wait for block confirmation
+      addNotification("Transaction Submitted", `Waiting for block confirmation... [View TX](${getExplorerTxUrl(txHash)})`, "info");
+
       let blockReceipt;
       if (publicClient) {
         blockReceipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
       }
 
-      // Check if minting was successful
-      const newTokenId = nfts.length + 1; // Fallback token ID
-      addTxRecord({
-        type: 'Mint',
-        tokenId: newTokenId,
-        tokenName: metadata.name,
-        amount: 0,
-        from: '0x0000...0000',
-        to: safeAddress,
-        status: 'Success'
-      }, txHash);
+      // Parse actual token ID from event logs
+      const parsedTokenId = parseTokenIdFromReceipt(blockReceipt);
+      const newTokenId = parsedTokenId || (nfts.length + 1);
 
-      // Save to local database
-      const rarityScore = parseFloat((40 + Math.random() * 58).toFixed(1));
-      let rarityLevel: 'Common' | 'Rare' | 'Epic' | 'Legendary' = 'Common';
-      if (rarityScore > 90) rarityLevel = 'Legendary';
-      else if (rarityScore > 75) rarityLevel = 'Epic';
-      else if (rarityScore > 55) rarityLevel = 'Rare';
+      addTxRecord({ type: 'Mint', tokenId: newTokenId, tokenName: metadata.name, amount: 0, from: '0x0000...0000', to: safeAddress, status: 'Success' }, txHash);
 
+      const rarity = generateRarity();
       const newNFT: NFT = {
         tokenId: newTokenId,
         name: metadata.name,
@@ -368,22 +404,14 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
         auctionEndTime: metadata.isAuction ? Date.now() + (metadata.duration || 24) * 60 * 60 * 1000 : undefined,
         auctionEnded: metadata.isAuction ? false : undefined,
         bids: [],
-        rarity: {
-          score: rarityScore,
-          level: rarityLevel,
-          traits: [
-            { trait_type: "Background", value: "Synthwave Glow", rarityScore: 50 },
-            { trait_type: "Algorithm", value: "Generative Flash", rarityScore: 80 }
-          ]
-        },
+        rarity,
         createdAt: Date.now(),
         views: 1
       };
 
-      // Add to listings if not auction
+      // Auto-list on marketplace or create auction
       if (!metadata.isAuction) {
         try {
-          // Attempt Listing on Marketplace
           await writeContractAsync({
             address: MARKETPLACE_ADDRESS,
             abi: MARKETPLACE_ABI,
@@ -391,24 +419,25 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
             args: [NFT_ADDRESS, BigInt(newTokenId), parseEther(metadata.priceOrBid.toString())],
           });
         } catch (listErr) {
-          console.warn("Auto-listing on-chain failed (possibly local node/addresses). Simulating listing.", listErr);
+          console.warn("[Marketplace] Auto-listing failed. NFT minted but not listed:", parseContractError(listErr));
+          addNotification("Listing Skipped", "NFT minted but auto-listing failed — you can list manually.", "warning");
         }
       } else {
         try {
-          // Attempt Listing on Auction Contract
           await writeContractAsync({
             address: AUCTION_ADDRESS,
             abi: AUCTION_ABI,
             functionName: 'createAuction',
             args: [
-              NFT_ADDRESS, 
-              BigInt(newTokenId), 
-              parseEther(metadata.priceOrBid.toString()), 
+              NFT_ADDRESS,
+              BigInt(newTokenId),
+              parseEther(metadata.priceOrBid.toString()),
               BigInt((metadata.duration || 24) * 3600)
             ],
           });
         } catch (aucErr) {
-          console.warn("Auto-auction on-chain failed (possibly local node/addresses). Simulating auction.", aucErr);
+          console.warn("[Auction] Auto-auction creation failed:", parseContractError(aucErr));
+          addNotification("Auction Setup Skipped", "NFT minted but auction setup failed — you can create one manually.", "warning");
         }
       }
 
@@ -418,73 +447,20 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
         return updated;
       });
 
-      addNotification("NFT Minted Successfully", `CyberNFT #${newTokenId} has been registered.`, "success");
+      addNotification("NFT Minted Successfully", `CyberNFT #${newTokenId} registered on Polygon Amoy!`, "success");
       return { success: true, tokenId: newTokenId };
 
     } catch (err: any) {
-      console.warn("[Blockchain] Mint failed, falling back to simulated flow", err);
-      
-      // Fallback simulated execution
-      const fallbackTokenId = nfts.length + 1;
-      const rarityScore = parseFloat((40 + Math.random() * 58).toFixed(1));
-      let rarityLevel: 'Common' | 'Rare' | 'Epic' | 'Legendary' = 'Common';
-      if (rarityScore > 90) rarityLevel = 'Legendary';
-      else if (rarityScore > 75) rarityLevel = 'Epic';
-      else if (rarityScore > 55) rarityLevel = 'Rare';
-
-      const newNFT: NFT = {
-        tokenId: fallbackTokenId,
-        name: metadata.name,
-        description: metadata.description,
-        image: metadata.image,
-        category: metadata.category,
-        creator: safeAddress,
-        owner: safeAddress,
-        price: metadata.isAuction ? 0 : metadata.priceOrBid,
-        royaltyFee: metadata.royaltyFee,
-        royaltyReceiver,
-        isListed: !metadata.isAuction,
-        isAuction: metadata.isAuction,
-        minBid: metadata.isAuction ? metadata.priceOrBid : undefined,
-        highestBid: metadata.isAuction ? 0 : undefined,
-        highestBidder: null,
-        auctionEndTime: metadata.isAuction ? Date.now() + (metadata.duration || 24) * 60 * 60 * 1000 : undefined,
-        auctionEnded: metadata.isAuction ? false : undefined,
-        bids: [],
-        rarity: {
-          score: rarityScore,
-          level: rarityLevel,
-          traits: [
-            { trait_type: "Background", value: "Local Simulator Grid", rarityScore: 40 },
-            { trait_type: "Algorithm", value: "Generative Fallback", rarityScore: 60 }
-          ]
-        },
-        createdAt: Date.now(),
-        views: 1
-      };
-
-      setNfts(prev => {
-        const updated = [newNFT, ...prev];
-        localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
-        return updated;
-      });
-
-      addTxRecord({
-        type: 'Mint',
-        tokenId: fallbackTokenId,
-        tokenName: metadata.name,
-        amount: 0,
-        from: '0x0000...0000',
-        to: safeAddress,
-        status: 'Success'
-      });
-
-      addNotification("NFT Minted (Sandbox)", `Simulated mint of CyberNFT #${fallbackTokenId} finished successfully.`, "success");
-      return { success: true, tokenId: fallbackTokenId };
+      const userMsg = parseContractError(err);
+      addNotification("Mint Failed", userMsg, "error");
+      addTxRecord({ type: 'Mint', tokenName: metadata.name, amount: 0, from: safeAddress, to: NFT_ADDRESS, status: 'Failed' });
+      return { success: false };
     }
   };
 
-  // Buy NFT
+  // ══════════════════════════════════════════════════════════════════
+  //  BUY NFT
+  // ══════════════════════════════════════════════════════════════════
   const buyNFT = async (tokenId: number): Promise<boolean> => {
     if (!isConnected || !walletAddress) {
       addNotification("Purchase Failed", "Please connect your wallet first", "error");
@@ -499,28 +475,18 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
 
     if (isPureSimulated) {
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, owner: safeAddress, isListed: false, price: 0 } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
-
-      addTxRecord({
-        type: 'Buy',
-        tokenId: nft.tokenId,
-        tokenName: nft.name,
-        amount: nft.price,
-        from: safeAddress,
-        to: nft.owner,
-        status: 'Success'
-      });
-
-      addNotification("Purchase Complete (Sandbox)", `Successfully transacted NFT #${tokenId} locally.`, "success");
+      addTxRecord({ type: 'Buy', tokenId: nft.tokenId, tokenName: nft.name, amount: nft.price, from: safeAddress, to: nft.owner, status: 'Success' });
+      addNotification("Purchase Complete (Sandbox)", `Successfully purchased NFT #${tokenId}`, "success");
       return true;
     }
 
-    addNotification("Initiating Purchase", `Preparing blockchain transfer for ${nft.name}...`, "info");
+    addNotification("Initiating Purchase", `Preparing transfer for ${nft.name}...`, "info");
 
     try {
       const txHash = await writeContractAsync({
@@ -531,60 +497,35 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
         value: parseEther(nft.price.toString()),
       });
 
-      addNotification("Transaction Pending", "Confirming payment distribution on Amoy...", "info");
-      
+      addNotification("Transaction Pending", `Confirming on Polygon Amoy... [View TX](${getExplorerTxUrl(txHash)})`, "info");
+
       if (publicClient) {
         await publicClient.waitForTransactionReceipt({ hash: txHash });
       }
 
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, owner: safeAddress, isListed: false, price: 0 } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
 
-      addTxRecord({
-        type: 'Buy',
-        tokenId: nft.tokenId,
-        tokenName: nft.name,
-        amount: nft.price,
-        from: safeAddress,
-        to: nft.owner,
-        status: 'Success'
-      }, txHash);
-
-      addNotification("Purchase Complete", `Bought ${nft.name} successfully!`, "success");
+      addTxRecord({ type: 'Buy', tokenId: nft.tokenId, tokenName: nft.name, amount: nft.price, from: safeAddress, to: nft.owner, status: 'Success' }, txHash);
+      addNotification("Purchase Complete", `Bought ${nft.name} for ${nft.price} MATIC!`, "success");
       return true;
 
     } catch (err) {
-      console.warn("[Blockchain] Purchase failed, falling back to simulated state update", err);
-
-      setNfts(prev => {
-        const updated = prev.map(item => 
-          item.tokenId === tokenId ? { ...item, owner: safeAddress, isListed: false, price: 0 } : item
-        );
-        localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
-        return updated;
-      });
-
-      addTxRecord({
-        type: 'Buy',
-        tokenId: nft.tokenId,
-        tokenName: nft.name,
-        amount: nft.price,
-        from: safeAddress,
-        to: nft.owner,
-        status: 'Success'
-      });
-
-      addNotification("Purchase Complete (Sandbox)", `Successfully transacted NFT #${tokenId} locally.`, "success");
-      return true;
+      const userMsg = parseContractError(err);
+      addNotification("Purchase Failed", userMsg, "error");
+      addTxRecord({ type: 'Buy', tokenId: nft.tokenId, tokenName: nft.name, amount: nft.price, from: safeAddress, to: nft.owner, status: 'Failed' });
+      return false;
     }
   };
 
-  // Place Bid
+  // ══════════════════════════════════════════════════════════════════
+  //  PLACE BID
+  // ══════════════════════════════════════════════════════════════════
   const placeBid = async (tokenId: number, bidAmount: number): Promise<boolean> => {
     if (!isConnected || !walletAddress) {
       addNotification("Bid Failed", "Connect your wallet first", "error");
@@ -604,36 +545,16 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
     }
 
     if (isPureSimulated) {
-      const newBid: NFTBid = {
-        bidder: safeAddress,
-        amount: bidAmount,
-        timestamp: Date.now()
-      };
-
+      const newBid: NFTBid = { bidder: safeAddress, amount: bidAmount, timestamp: Date.now() };
       setNfts(prev => {
-        const updated = prev.map(item => 
-          item.tokenId === tokenId ? {
-            ...item,
-            highestBid: bidAmount,
-            highestBidder: walletAddress,
-            bids: [newBid, ...item.bids]
-          } : item
+        const updated = prev.map(item =>
+          item.tokenId === tokenId ? { ...item, highestBid: bidAmount, highestBidder: walletAddress, bids: [newBid, ...item.bids] } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
-
-      addTxRecord({
-        type: 'Bid',
-        tokenId,
-        tokenName: nft.name,
-        amount: bidAmount,
-        from: safeAddress,
-        to: 'Auction Contract',
-        status: 'Success'
-      });
-
-      addNotification("Bid Placed (Sandbox)", `Bid of ${bidAmount} MATIC registered locally.`, "success");
+      addTxRecord({ type: 'Bid', tokenId, tokenName: nft.name, amount: bidAmount, from: safeAddress, to: 'Auction Contract', status: 'Success' });
+      addNotification("Bid Placed (Sandbox)", `Bid of ${bidAmount} MATIC registered.`, "success");
       return true;
     }
 
@@ -652,76 +573,30 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
         await publicClient.waitForTransactionReceipt({ hash: txHash });
       }
 
-      const newBid: NFTBid = {
-        bidder: safeAddress,
-        amount: bidAmount,
-        timestamp: Date.now()
-      };
-
+      const newBid: NFTBid = { bidder: safeAddress, amount: bidAmount, timestamp: Date.now() };
       setNfts(prev => {
-        const updated = prev.map(item => 
-          item.tokenId === tokenId ? {
-            ...item,
-            highestBid: bidAmount,
-            highestBidder: walletAddress,
-            bids: [newBid, ...item.bids]
-          } : item
+        const updated = prev.map(item =>
+          item.tokenId === tokenId ? { ...item, highestBid: bidAmount, highestBidder: walletAddress, bids: [newBid, ...item.bids] } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
 
-      addTxRecord({
-        type: 'Bid',
-        tokenId,
-        tokenName: nft.name,
-        amount: bidAmount,
-        from: safeAddress,
-        to: 'Auction Contract',
-        status: 'Success'
-      }, txHash);
-
+      addTxRecord({ type: 'Bid', tokenId, tokenName: nft.name, amount: bidAmount, from: safeAddress, to: 'Auction Contract', status: 'Success' }, txHash);
       addNotification("Bid Placed", `Highest bid is now ${bidAmount} MATIC!`, "success");
       return true;
 
     } catch (err) {
-      console.warn("[Blockchain] Bidding failed, fallback to simulated bidding state", err);
-
-      const newBid: NFTBid = {
-        bidder: safeAddress,
-        amount: bidAmount,
-        timestamp: Date.now()
-      };
-
-      setNfts(prev => {
-        const updated = prev.map(item => 
-          item.tokenId === tokenId ? {
-            ...item,
-            highestBid: bidAmount,
-            highestBidder: walletAddress,
-            bids: [newBid, ...item.bids]
-          } : item
-        );
-        localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
-        return updated;
-      });
-
-      addTxRecord({
-        type: 'Bid',
-        tokenId,
-        tokenName: nft.name,
-        amount: bidAmount,
-        from: safeAddress,
-        to: 'Auction Contract',
-        status: 'Success'
-      });
-
-      addNotification("Bid Placed (Sandbox)", `Bid of ${bidAmount} MATIC registered locally.`, "success");
-      return true;
+      const userMsg = parseContractError(err);
+      addNotification("Bid Failed", userMsg, "error");
+      addTxRecord({ type: 'Bid', tokenId, tokenName: nft.name, amount: bidAmount, from: safeAddress, to: 'Auction Contract', status: 'Failed' });
+      return false;
     }
   };
 
-  // End Auction
+  // ══════════════════════════════════════════════════════════════════
+  //  END AUCTION
+  // ══════════════════════════════════════════════════════════════════
   const endAuction = async (tokenId: number): Promise<boolean> => {
     const nft = nfts.find(n => n.tokenId === tokenId);
     if (!nft || !nft.isAuction) return false;
@@ -729,28 +604,18 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
     if (isPureSimulated) {
       const finalWinner = nft.highestBidder || nft.creator;
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, owner: finalWinner, isAuction: false, auctionEnded: true, isListed: false } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
-
-      addTxRecord({
-        type: 'End Auction',
-        tokenId,
-        tokenName: nft.name,
-        amount: nft.highestBid || 0,
-        from: 'Auction Contract',
-        to: finalWinner,
-        status: 'Success'
-      });
-
-      addNotification("Auction Finalized (Sandbox)", `Auction ended. Owner updated to: ${finalWinner}`, "success");
+      addTxRecord({ type: 'End Auction', tokenId, tokenName: nft.name, amount: nft.highestBid || 0, from: 'Auction Contract', to: finalWinner, status: 'Success' });
+      addNotification("Auction Finalized (Sandbox)", `Auction ended. Winner: ${finalWinner}`, "success");
       return true;
     }
 
-    addNotification("Ending Auction", "Releasing NFT and distributing auction funds...", "info");
+    addNotification("Ending Auction", "Releasing NFT and distributing funds...", "info");
 
     try {
       const txHash = await writeContractAsync({
@@ -766,54 +631,27 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
 
       const finalWinner = nft.highestBidder || nft.creator;
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, owner: finalWinner, isAuction: false, auctionEnded: true, isListed: false } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
 
-      addTxRecord({
-        type: 'End Auction',
-        tokenId,
-        tokenName: nft.name,
-        amount: nft.highestBid || 0,
-        from: 'Auction Contract',
-        to: finalWinner,
-        status: 'Success'
-      }, txHash);
-
+      addTxRecord({ type: 'End Auction', tokenId, tokenName: nft.name, amount: nft.highestBid || 0, from: 'Auction Contract', to: finalWinner, status: 'Success' }, txHash);
       addNotification("Auction Finalized", `Winner: ${finalWinner}`, "success");
       return true;
 
     } catch (err) {
-      console.warn("[Blockchain] Ending auction failed, fallback to simulated finalize", err);
-
-      const finalWinner = nft.highestBidder || nft.creator;
-      setNfts(prev => {
-        const updated = prev.map(item => 
-          item.tokenId === tokenId ? { ...item, owner: finalWinner, isAuction: false, auctionEnded: true, isListed: false } : item
-        );
-        localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
-        return updated;
-      });
-
-      addTxRecord({
-        type: 'End Auction',
-        tokenId,
-        tokenName: nft.name,
-        amount: nft.highestBid || 0,
-        from: 'Auction Contract',
-        to: finalWinner,
-        status: 'Success'
-      });
-
-      addNotification("Auction Finalized (Sandbox)", `Auction ended. Owner updated to: ${finalWinner}`, "success");
-      return true;
+      const userMsg = parseContractError(err);
+      addNotification("Auction End Failed", userMsg, "error");
+      return false;
     }
   };
 
-  // Cancel Listing
+  // ══════════════════════════════════════════════════════════════════
+  //  CANCEL LISTING
+  // ══════════════════════════════════════════════════════════════════
   const cancelListing = async (tokenId: number): Promise<boolean> => {
     if (!isConnected || !walletAddress) {
       addNotification("Cancel Failed", "Connect your wallet first", "error");
@@ -822,23 +660,14 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
 
     if (isPureSimulated) {
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, isListed: false, price: 0 } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
-
-      addTxRecord({
-        type: 'Cancel',
-        tokenId,
-        tokenName: nfts.find(n => n.tokenId === tokenId)?.name,
-        from: safeAddress,
-        to: safeAddress,
-        status: 'Success'
-      });
-
-      addNotification("Listing Canceled (Sandbox)", "Escrowed asset returned to wallet.", "success");
+      addTxRecord({ type: 'Cancel', tokenId, tokenName: nfts.find(n => n.tokenId === tokenId)?.name, from: safeAddress, to: safeAddress, status: 'Success' });
+      addNotification("Listing Canceled (Sandbox)", "NFT returned to wallet.", "success");
       return true;
     }
 
@@ -857,51 +686,27 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
       }
 
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, isListed: false, price: 0 } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
 
-      addTxRecord({
-        type: 'Cancel',
-        tokenId,
-        tokenName: nfts.find(n => n.tokenId === tokenId)?.name,
-        from: safeAddress,
-        to: safeAddress,
-        status: 'Success'
-      }, txHash);
-
-      addNotification("Listing Canceled", "NFT returned to wallet", "success");
+      addTxRecord({ type: 'Cancel', tokenId, tokenName: nfts.find(n => n.tokenId === tokenId)?.name, from: safeAddress, to: safeAddress, status: 'Success' }, txHash);
+      addNotification("Listing Canceled", "NFT returned to your wallet", "success");
       return true;
 
     } catch (err) {
-      console.warn("[Blockchain] Cancellation failed, fallback to simulated state change", err);
-
-      setNfts(prev => {
-        const updated = prev.map(item => 
-          item.tokenId === tokenId ? { ...item, isListed: false, price: 0 } : item
-        );
-        localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
-        return updated;
-      });
-
-      addTxRecord({
-        type: 'Cancel',
-        tokenId,
-        tokenName: nfts.find(n => n.tokenId === tokenId)?.name,
-        from: safeAddress,
-        to: safeAddress,
-        status: 'Success'
-      });
-
-      addNotification("Listing Canceled (Sandbox)", "Escrowed asset returned to wallet.", "success");
-      return true;
+      const userMsg = parseContractError(err);
+      addNotification("Cancel Failed", userMsg, "error");
+      return false;
     }
   };
 
-  // List NFT
+  // ══════════════════════════════════════════════════════════════════
+  //  LIST NFT
+  // ══════════════════════════════════════════════════════════════════
   const listNFT = async (tokenId: number, price: number): Promise<boolean> => {
     if (!isConnected || !walletAddress) {
       addNotification("Listing Failed", "Connect wallet first", "error");
@@ -910,28 +715,18 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
 
     if (isPureSimulated) {
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, isListed: true, price, isAuction: false } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
-
-      addTxRecord({
-        type: 'List',
-        tokenId,
-        tokenName: nfts.find(n => n.tokenId === tokenId)?.name,
-        amount: price,
-        from: safeAddress,
-        to: 'Marketplace Contract',
-        status: 'Success'
-      });
-
-      addNotification("NFT Listed (Sandbox)", `Asset listed locally for ${price} MATIC.`, "success");
+      addTxRecord({ type: 'List', tokenId, tokenName: nfts.find(n => n.tokenId === tokenId)?.name, amount: price, from: safeAddress, to: 'Marketplace Contract', status: 'Success' });
+      addNotification("NFT Listed (Sandbox)", `Listed for ${price} MATIC.`, "success");
       return true;
     }
 
-    addNotification("Listing NFT", `Registering listing on marketplace at ${price} MATIC...`, "info");
+    addNotification("Listing NFT", `Registering on marketplace at ${price} MATIC...`, "info");
 
     try {
       const txHash = await writeContractAsync({
@@ -946,49 +741,21 @@ export function useNFTMarketplace(simulatedConnected?: boolean, simulatedAddress
       }
 
       setNfts(prev => {
-        const updated = prev.map(item => 
+        const updated = prev.map(item =>
           item.tokenId === tokenId ? { ...item, isListed: true, price, isAuction: false } : item
         );
         localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
         return updated;
       });
 
-      addTxRecord({
-        type: 'List',
-        tokenId,
-        tokenName: nfts.find(n => n.tokenId === tokenId)?.name,
-        amount: price,
-        from: safeAddress,
-        to: 'Marketplace Contract',
-        status: 'Success'
-      }, txHash);
-
+      addTxRecord({ type: 'List', tokenId, tokenName: nfts.find(n => n.tokenId === tokenId)?.name, amount: price, from: safeAddress, to: 'Marketplace Contract', status: 'Success' }, txHash);
       addNotification("NFT Listed", `Listed for sale at ${price} MATIC`, "success");
       return true;
 
     } catch (err) {
-      console.warn("[Blockchain] Listing failed, fallback to simulated listing state", err);
-
-      setNfts(prev => {
-        const updated = prev.map(item => 
-          item.tokenId === tokenId ? { ...item, isListed: true, price, isAuction: false } : item
-        );
-        localStorage.setItem('cyberspace_nfts', JSON.stringify(updated));
-        return updated;
-      });
-
-      addTxRecord({
-        type: 'List',
-        tokenId,
-        tokenName: nfts.find(n => n.tokenId === tokenId)?.name,
-        amount: price,
-        from: safeAddress,
-        to: 'Marketplace Contract',
-        status: 'Success'
-      });
-
-      addNotification("NFT Listed (Sandbox)", `Asset listed locally for ${price} MATIC.`, "success");
-      return true;
+      const userMsg = parseContractError(err);
+      addNotification("Listing Failed", userMsg, "error");
+      return false;
     }
   };
 

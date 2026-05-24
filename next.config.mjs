@@ -11,6 +11,14 @@ const nextConfig = {
         protocol: 'https',
         hostname: 'ipfs.io',
       },
+      {
+        protocol: 'https',
+        hostname: 'gateway.pinata.cloud',
+      },
+      {
+        protocol: 'https',
+        hostname: '*.mypinata.cloud',
+      },
     ],
   },
   webpack: (config) => {

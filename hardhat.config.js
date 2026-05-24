@@ -3,6 +3,9 @@ require("dotenv").config();
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "0x0000000000000000000000000000000000000000000000000000000000000000";
 const POLYGONSCAN_API_KEY = process.env.POLYGONSCAN_API_KEY || "";
+const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
+const POLYGON_AMOY_RPC_URL = process.env.POLYGON_AMOY_RPC_URL || "https://rpc-amoy.polygon.technology";
+const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL || "https://rpc.sepolia.org";
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
@@ -21,14 +24,21 @@ module.exports = {
       chainId: 1337,
     },
     amoy: {
-      url: "https://rpc-amoy.polygon.technology",
+      url: POLYGON_AMOY_RPC_URL,
       accounts: [PRIVATE_KEY],
       chainId: 80002,
+      gasPrice: 30000000000, // 30 gwei — Amoy can spike
+    },
+    sepolia: {
+      url: SEPOLIA_RPC_URL,
+      accounts: [PRIVATE_KEY],
+      chainId: 11155111,
     },
   },
   etherscan: {
     apiKey: {
       polygonAmoy: POLYGONSCAN_API_KEY,
+      sepolia: ETHERSCAN_API_KEY,
     },
     customChains: [
       {
@@ -40,5 +50,10 @@ module.exports = {
         },
       },
     ],
+  },
+  gasReporter: {
+    enabled: process.env.REPORT_GAS === "true",
+    currency: "USD",
+    gasPrice: 30,
   },
 };
